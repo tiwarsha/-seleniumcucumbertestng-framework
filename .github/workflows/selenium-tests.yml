@@ -1,0 +1,50 @@
+name: Selenium Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      browser:
+        description: Browser to run
+        default: chrome
+        required: true
+      env:
+        description: Environment to run
+        default: qa
+        required: true
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [ chrome, firefox ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Run Cucumber TestNG tests
+        run: >
+          mvn clean test
+          -Dbrowser=${{ inputs.browser || matrix.browser }}
+          -Denv=${{ inputs.env || 'qa' }}
+          -Dheadless=true
+          -Dcucumber.filter.tags="@smoke"
+
+      - name: Upload Cucumber report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cucumber-report
+          path: target/cucumber-reports
