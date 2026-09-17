@@ -21,6 +21,7 @@ src
 |-- main/java/com/example/automation
 |   |-- config        # Runtime config resolver
 |   |-- driver        # Driver factory and ThreadLocal manager
+|   |-- model         # Test data models
 |   |-- pages         # Page Object Model classes
 |   `-- utils         # Shared utilities
 `-- test
@@ -31,7 +32,21 @@ src
     `-- resources
         |-- config/application.properties
         |-- features/smoke.feature
+        |-- features/end_to_end_purchase.feature
         `-- suites/testng.xml
+```
+
+## End To End Scenario
+
+`end_to_end_purchase.feature` covers the shopping flow on https://askomdch.com:
+store search, add to cart, cart verification, quantity update, checkout with billing
+details, direct bank transfer payment, and order confirmation. Feature file and step
+definitions are kept separate: steps live in
+`src/test/java/com/example/automation/stepdefinitions/EndToEndPurchaseSteps.java`
+and all locators live in the page objects under `src/main/java/com/example/automation/pages`.
+
+```bash
+mvn clean test -Dheadless=true -Dcucumber.filter.tags="@e2e"
 ```
 
 ## Run Tests
@@ -81,7 +96,7 @@ Supported keys:
 | --- | --- | --- |
 | `browser` | `chrome`, `firefox`, `edge` | Browser selection |
 | `env` | `dev`, `qa`, `stage`, `prod` | Environment selection |
-| `baseUrl.<env>` | `baseUrl.qa=https://example.com` | Environment URL |
+| `baseUrl.<env>` | `baseUrl.qa=https://askomdch.com` | Environment URL |
 | `headless` | `true` | CI-friendly headless run |
 | `remote` | `true` | Use Selenium Grid |
 | `gridUrl` | `http://localhost:4444/wd/hub` | Grid endpoint |
@@ -126,14 +141,12 @@ target/cucumber-reports/cucumber.json
 target/cucumber-reports/cucumber.xml
 ```
 
-## Current Sample Test
-
-The framework intentionally has only one Cucumber scenario:
+## Current Tests
 
 ```gherkin
+@smoke
 Scenario: Open browser and print hello
-  Given I open the configured application
-  Then I print hello
-```
 
-This keeps the test case minimal while the automation infrastructure remains ready for real project test coverage.
+@e2e @regression
+Scenario Outline: Search a product, add it to the cart and place the order
+```
