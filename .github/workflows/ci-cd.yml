@@ -1,0 +1,207 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  BACKEND_IMAGE_NAME: ${{ github.repository }}/hello-backend
+  FRONTEND_IMAGE_NAME: ${{ github.repository }}/hello-frontend
+
+jobs:
+  unit-tests:
+    name: Build and unit test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Backend tests
+        working-directory: apps/backend
+        run: mvn -B clean verify
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
+
+      - name: Frontend build
+        working-directory: apps/frontend
+        run: |
+          npm ci
+          npm run build
+
+  e2e-tests:
+    name: Selenium Cucumber e2e (Docker)
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Start application stack
+        run: docker compose up -d --build
+
+      - name: Wait for frontend
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://localhost:3000 > /dev/null; then
+              echo "frontend is up"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "frontend did not become ready"
+          docker compose logs
+          exit 1
+
+      - name: Run Cucumber e2e tests
+        env:
+          BASE_URL_LOCAL: http://localhost:3000
+        run: >
+          mvn -B clean test
+          -Denv=local
+          -Dheadless=true
+          -Dcucumber.filter.tags="@e2e"
+
+      - name: Upload Cucumber report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cucumber-report
+          path: target/cucumber-reports
+
+      - name: Stop application stack
+        if: always()
+        run: docker compose down -v
+
+  publish-images:
+    name: Publish Docker images
+    runs-on: ubuntu-latest
+    needs: e2e-tests
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tag }}
+      backend-digest: ${{ steps.backend.outputs.digest }}
+      frontend-digest: ${{ steps.frontend.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: meta
+        run: echo "tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push backend
+        id: backend
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/backend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE_NAME }}:${{ steps.meta.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE_NAME }}:latest
+
+      - name: Build and push frontend
+        id: frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/frontend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE_NAME }}:${{ steps.meta.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE_NAME }}:latest
+
+  deploy-prod:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    needs: publish-images
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: true
+    env:
+      PROD_SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+      BACKEND_IMAGE: ghcr.io/${{ github.repository }}/hello-backend@${{ needs.publish-images.outputs.backend-digest }}
+      FRONTEND_IMAGE: ghcr.io/${{ github.repository }}/hello-frontend@${{ needs.publish-images.outputs.frontend-digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy over SSH
+        if: env.PROD_SSH_HOST != ''
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          APP_DIR: ${{ secrets.PROD_APP_DIR }}
+          REGISTRY_HOST: ${{ env.REGISTRY }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          host: ${{ secrets.PROD_SSH_HOST }}
+          username: ${{ secrets.PROD_SSH_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          envs: APP_DIR,REGISTRY_HOST,REGISTRY_USER,REGISTRY_TOKEN,BACKEND_IMAGE,FRONTEND_IMAGE
+          script: |
+            set -eu
+            cd "$APP_DIR"
+            printf '%s' "$REGISTRY_TOKEN" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USER" --password-stdin
+            APP_ENVIRONMENT=prod docker compose -f docker-compose.prod.yml up -d --pull always
+            docker image prune -af
+
+      - name: Skip deploy (production host not configured)
+        if: env.PROD_SSH_HOST == ''
+        run: |
+          echo "PROD_SSH_HOST secret is not set; skipping remote deployment."
+          echo "Images published:"
+          echo "  $BACKEND_IMAGE"
+          echo "  $FRONTEND_IMAGE"
+
+  smoke-prod:
+    name: Post-deploy smoke test
+    runs-on: ubuntu-latest
+    needs: deploy-prod
+    if: ${{ needs.deploy-prod.result == 'success' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Run smoke tests against production
+        if: ${{ vars.PROD_BASE_URL != '' }}
+        env:
+          BASE_URL_PROD: ${{ vars.PROD_BASE_URL }}
+        run: >
+          mvn -B clean test
+          -Denv=prod
+          -Dheadless=true
+          -Dcucumber.filter.tags="@e2e"
+
+      - name: Skip smoke tests
+        if: ${{ vars.PROD_BASE_URL == '' }}
+        run: echo "PROD_BASE_URL variable is not set; skipping production smoke tests."
