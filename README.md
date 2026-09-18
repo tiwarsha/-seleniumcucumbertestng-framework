@@ -165,7 +165,7 @@ cd apps/frontend && npm install && npm run dev   # http://localhost:5173, proxie
 1. `unit-tests`: backend `mvn verify` and frontend `npm ci && npm run build`
 2. `e2e-tests`: `docker compose up -d --build`, then the `@e2e` Selenium/Cucumber suite against the containers, with the Cucumber report uploaded as an artifact
 3. `publish-images`: on `main`, builds and pushes `hello-backend` and `hello-frontend` images to GHCR tagged with the short SHA and `latest`
-4. `deploy-prod`: deploys those tags to the production host over SSH with `docker-compose.prod.yml` (uses the `production` GitHub environment)
+4. `deploy-prod`: deploys those images by digest to the production host over SSH with `docker-compose.prod.yml` (uses the `production` GitHub environment, serialized by a `deploy-production` concurrency group)
 5. `smoke-prod`: re-runs the `@e2e` suite against `PROD_BASE_URL`
 
 Deployment configuration (repository settings):

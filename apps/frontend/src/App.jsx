@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 const API_URL = `${import.meta.env.VITE_API_BASE_URL ?? ''}/api/hello`;
 
@@ -6,8 +6,10 @@ export default function App() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const latestRequest = useRef(0);
 
   const loadMessage = useCallback(async () => {
+    const requestId = ++latestRequest.current;
     setLoading(true);
     setError('');
     try {
@@ -16,12 +18,18 @@ export default function App() {
         throw new Error(`Request failed with status ${response.status}`);
       }
       const body = await response.json();
-      setMessage(body.message);
+      if (requestId === latestRequest.current) {
+        setMessage(body.message);
+      }
     } catch (cause) {
-      setError(cause.message);
-      setMessage('');
+      if (requestId === latestRequest.current) {
+        setError(cause.message);
+        setMessage('');
+      }
     } finally {
-      setLoading(false);
+      if (requestId === latestRequest.current) {
+        setLoading(false);
+      }
     }
   }, []);
 

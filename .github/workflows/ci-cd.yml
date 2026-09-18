@@ -99,6 +99,8 @@ jobs:
       packages: write
     outputs:
       image-tag: ${{ steps.meta.outputs.tag }}
+      backend-digest: ${{ steps.backend.outputs.digest }}
+      frontend-digest: ${{ steps.frontend.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
 
@@ -114,6 +116,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push backend
+        id: backend
         uses: docker/build-push-action@v6
         with:
           context: apps/backend
@@ -123,6 +126,7 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE_NAME }}:latest
 
       - name: Build and push frontend
+        id: frontend
         uses: docker/build-push-action@v6
         with:
           context: apps/frontend
@@ -136,34 +140,43 @@ jobs:
     runs-on: ubuntu-latest
     needs: publish-images
     environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: true
     env:
       PROD_SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+      BACKEND_IMAGE: ghcr.io/${{ github.repository }}/hello-backend@${{ needs.publish-images.outputs.backend-digest }}
+      FRONTEND_IMAGE: ghcr.io/${{ github.repository }}/hello-frontend@${{ needs.publish-images.outputs.frontend-digest }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Deploy over SSH
         if: env.PROD_SSH_HOST != ''
         uses: appleboy/ssh-action@v1.2.0
+        env:
+          APP_DIR: ${{ secrets.PROD_APP_DIR }}
+          REGISTRY_HOST: ${{ env.REGISTRY }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           host: ${{ secrets.PROD_SSH_HOST }}
           username: ${{ secrets.PROD_SSH_USER }}
           key: ${{ secrets.PROD_SSH_KEY }}
+          envs: APP_DIR,REGISTRY_HOST,REGISTRY_USER,REGISTRY_TOKEN,BACKEND_IMAGE,FRONTEND_IMAGE
           script: |
-            cd ${{ secrets.PROD_APP_DIR }}
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-            BACKEND_IMAGE=${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE_NAME }}:${{ needs.publish-images.outputs.image-tag }} \
-            FRONTEND_IMAGE=${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE_NAME }}:${{ needs.publish-images.outputs.image-tag }} \
-            APP_ENVIRONMENT=prod \
-            docker compose -f docker-compose.prod.yml up -d --pull always
-            docker image prune -f
+            set -eu
+            cd "$APP_DIR"
+            printf '%s' "$REGISTRY_TOKEN" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USER" --password-stdin
+            APP_ENVIRONMENT=prod docker compose -f docker-compose.prod.yml up -d --pull always
+            docker image prune -af
 
       - name: Skip deploy (production host not configured)
         if: env.PROD_SSH_HOST == ''
         run: |
           echo "PROD_SSH_HOST secret is not set; skipping remote deployment."
           echo "Images published:"
-          echo "  ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE_NAME }}:${{ needs.publish-images.outputs.image-tag }}"
-          echo "  ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE_NAME }}:${{ needs.publish-images.outputs.image-tag }}"
+          echo "  $BACKEND_IMAGE"
+          echo "  $FRONTEND_IMAGE"
 
   smoke-prod:
     name: Post-deploy smoke test
