@@ -1,0 +1,29 @@
+services:
+  backend:
+    build:
+      context: ./apps/backend
+    image: ${BACKEND_IMAGE:-hello-backend:local}
+    environment:
+      - APP_ENVIRONMENT=${APP_ENVIRONMENT:-local}
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -qO- http://localhost:8080/actuator/health | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  frontend:
+    build:
+      context: ./apps/frontend
+    image: ${FRONTEND_IMAGE:-hello-frontend:local}
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
